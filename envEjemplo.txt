@@ -1,0 +1,6 @@
+# Completar credenciales de conexión a la base de datos
+
+DB_USER=Usuario de la bbdd
+DB_PASSWORD=Contraseña del usuario
+DB_HOST=Servidor de la bbdd
+DB_NAME=Nombre de la bbdd
