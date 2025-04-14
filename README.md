@@ -2,12 +2,12 @@ El objetivo del script es poder normalizar la información de una base de datos 
 
 INSTRUCCIONES:
 
-1- Crear un .env con las credenciales del usuario y los datos de conexión a la bbdd
+1- Crear un .env con las credenciales del usuario y los datos de conexión a la bbdd y la ruta desde donde se toman los archivos .txt
 
-2- Al final del código en el archivo carga.py, poner la ruta a la carpeta en donde están los archivos .txt
+2- Crear un entorno virtual con el comando "python -m venv NombreDelVenv"
 
-3- Crear un entorno virtual con el comando "python -m venv NombreDelVenv"
+3- Instalar las librerias con el comando "pip install -r requirements.txt"
 
-4- Instalar las librerias con el comando "pip install -r requirements.txt"
+4- Ejecutar el comando "python carga.py"
 
-5- Ejecutar el comando "python carga.py"
+5- Opcionalmente se puede utilizar el comando "python update.py" si lo que se quiere es realizar una actualización de información que ya existe en la bbdd para que solo actualice las filas en donde se repite el id_persona o id_domicilio

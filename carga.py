@@ -9,11 +9,12 @@ from dotenv import load_dotenv
 # Cargar variables de entorno desde un archivo .env
 load_dotenv(override=True)
 
-# Configuración de la base de datos
+# Configuración de la base de datos y ruta de archivos
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_NAME = os.getenv("DB_NAME")
+PATH = os.getenv("PATH")
 
 # Crear conexión a la base de datos
 engine = create_engine(f'mysql+mysqlconnector://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}')
@@ -32,7 +33,7 @@ archivo_a_tabla = {
     "CRUCE_INMUEBLES": "inmuebles",
     "CRUCE_JUBILACIONES_PENSIONES": "jubilaciones_pensiones",
     "CRUCE_OBRAS SOCIALES FULL": "obras_sociales",
-    "CRUCE_PADRON_ DEUDORES_BCRA": "deudores_bcra", # Tiene un espacio después de PADRON_ (asi viene el archivo)
+    "CRUCE_PADRON_ DEUDORES_BCRA": "deudores_bcra",  # Tiene un espacio después de PADRON_ (así viene el archivo)
     "CRUCE_PADRON_AUTOMOTORES": "automotores",
     "CRUCE_PERSONAS_DOMICILIOS": "personas_domicilios",
     "CRUCE_PERSONAS_JURIDICAS": "personas_juridicas",
@@ -68,7 +69,6 @@ def procesar_y_cargar_archivos(carpeta):
                     archivos_cargados.append(archivo)
                 else:
                     archivos_con_errores.append(archivo)
-
         elif match_b:
             # Clave fija para archivos B002537_
             clave = "B002537_"
@@ -80,7 +80,7 @@ def procesar_y_cargar_archivos(carpeta):
                 else:
                     archivos_con_errores.append(archivo)
 
-    # Resumen final
+    # Resumen final del proceso
     print("\nResumen del proceso:")
     print(f"Archivos totales cargados ({len(archivos_cargados)}):")
     for archivo in archivos_cargados:
@@ -127,7 +127,7 @@ def procesar_archivo(archivo, ruta_archivo, nombre_tabla, archivos_sin_id_person
         else:
             return row_list
 
-    # Procesar las filas (sin incluir la primera que es el encabezado)
+    # Procesar las filas (sin incluir el encabezado)
     rows = []
     for line in lines:
         if line.strip() == "":
@@ -151,21 +151,21 @@ def procesar_archivo(archivo, ruta_archivo, nombre_tabla, archivos_sin_id_person
     # Convertir la tabla limpia a un DataFrame de pandas
     df = etl.todataframe(tabla)
 
-    # Normalizar los nombres de las columnas: quitar espacios y pasar a mayusculas
+    # Normalizar nombres de columnas: quitar espacios y pasar a minúsculas
     df.columns = df.columns.str.strip().str.lower()
     print("Columnas en el DataFrame:", df.columns)
     print("Número total de filas leídas:", len(df))
 
-    # Verificar si la columna 'ID_PERSONA' existe
-    if 'ID_PERSONA' not in df.columns:
+    # Verificar la presencia de la columna 'id_persona'
+    if 'id_persona' not in df.columns:
         print(f"El archivo no contiene la columna 'ID_PERSONA'.")
         archivos_sin_id_persona.append(archivo)
 
-    # Procesar el DataFrame: aplicar strip solo a columnas de tipo object
+    # Aplicar strip a columnas de tipo object
     for col in df.select_dtypes(include='object').columns:
         df[col] = df[col].str.strip()
 
-    # Cargar los datos en la base de datos
+    # Cargar los datos en la base de datos (DROP + CREATE)
     if not cargar_datos_en_bd(df, nombre_tabla):
         archivos_con_errores.append(archivo)
         return False
@@ -173,11 +173,9 @@ def procesar_archivo(archivo, ruta_archivo, nombre_tabla, archivos_sin_id_person
     return True
 
 def convertir_a_formato_tabla(df, nombre_tabla):
-    # Obtener el esquema de la tabla desde la base de datos
+    # Obtener el esquema de la tabla desde la BD (cuando ya existe) para ajustar los tipos si es necesario
     inspector = inspect(engine)
     columnas_esquema = inspector.get_columns(nombre_tabla)
-
-    # Convertir los datos en el DataFrame al tipo correcto según el esquema
     for columna in columnas_esquema:
         col_name = columna['name'].lower()
         col_type = columna['type']
@@ -186,52 +184,64 @@ def convertir_a_formato_tabla(df, nombre_tabla):
                 df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype(int)
             elif 'VARCHAR' in str(col_type) or 'TEXT' in str(col_type):
                 df[col_name] = df[col_name].astype(str)
-            # Agrega más conversiones según sea necesario
     return df
 
 def cargar_datos_en_bd(df, nombre_tabla, lot_size=1000):
+    """
+    Esta función elimina (DROP) la tabla si existe, la crea de nuevo (CREATE) usando la lógica:
+      - Para 'personas_domicilios': se utiliza 'id_domicilio' si está presente, sino 'codigo'.
+      - Para las demás: si existe 'id_persona' se usa; sino se utiliza 'codigo'.
+    Luego inserta todos los registros (sin update).
+    """
     connection = None
     try:
         connection = engine.connect()
         trans = connection.begin()
 
-        # Convertir los nombres de las columnas a mayúsculas
+        # Convertir nombres de columnas a minúsculas
         df.columns = df.columns.str.lower()
 
-        # Eliminar la tabla si existe
         inspector = inspect(engine)
+        # Eliminar la tabla si existe
         if inspector.has_table(nombre_tabla):
             connection.execute(text(f"DROP TABLE {nombre_tabla}"))
             print(f"Tabla {nombre_tabla} eliminada.")
 
-        # Crear la tabla
+        # Determinar la clave primaria (y unique) según las reglas
+        if nombre_tabla == "personas_domicilios":
+            pk = "id_domicilio" if ("id_domicilio" in df.columns or "id_domicilios" in df.columns) else "codigo"
+        elif "id_persona" in df.columns:
+            pk = "id_persona"
+        else:
+            pk = "codigo"
+
+        # Crear la tabla con la definición de columnas
         metadata = MetaData()
-        columns = [
-            Column(name, Integer, primary_key=False, unique=False) if name == 'ID_PERSONA' else Column(name, String(255))
-            for name in df.columns
-        ]
+        columns = []
+        for name in df.columns:
+            if name == pk:
+                # Se marca como PRIMARY KEY y UNIQUE según lo requerido.
+                columns.append(Column(name, Integer, primary_key=True, unique=True))
+            else:
+                columns.append(Column(name, String(255)))
         table = Table(nombre_tabla, metadata, *columns)
         metadata.create_all(engine)
         print(f"Tabla {nombre_tabla} creada.")
 
-        # Convertir DataFrame al formato correcto
+        # Convertir DataFrame (opcional) al formato correcto según la tabla
         df = convertir_a_formato_tabla(df, nombre_tabla)
 
-        # Insertar datos en lotes
+        # Insertar los datos en lotes (sin lógica de update, ya que se hizo drop-create)
         for i in range(0, len(df), lot_size):
             batch = df.iloc[i:i + lot_size]
             valores = batch.to_dict(orient='records')
 
-            # Construir la consulta SQL
             columnas = ", ".join(batch.columns)
             valores_sql = ", ".join([f":{col}" for col in batch.columns])
-
             sql = text(f"""
                 INSERT INTO {nombre_tabla} ({columnas})
                 VALUES ({valores_sql});
             """)
-
-            # Ejecutar la inserción
             connection.execute(sql, valores)
 
         trans.commit()
@@ -249,4 +259,4 @@ def cargar_datos_en_bd(df, nombre_tabla, lot_size=1000):
             connection.close()
 
 # Ejecutar el proceso
-procesar_y_cargar_archivos('RUTA/DE/LOS/ARCHIVOS/A/PROCESAR')
+procesar_y_cargar_archivos(PATH)
